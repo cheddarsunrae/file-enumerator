@@ -1,0 +1,43 @@
+name: apply-bsdtar-support
+
+on:
+  push:
+    branches:
+      - agent/bsdtar-archive-support
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply archive backend patch
+        run: python3 tools/apply_bsdtar_support.py
+
+      - name: Install runtime archive backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools
+          command -v bsdtar
+
+      - name: Validate
+        run: |
+          python3 -m py_compile src/file-enumerator
+          python3 -m py_compile tests/test_file_enumerator.py
+          make test
+          git diff --check
+
+      - name: Commit validated changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f tools/apply_bsdtar_support.py
+          rm -f .github/workflows/apply-bsdtar-support.yml
+          rmdir tools 2>/dev/null || true
+          git add -A
+          git commit -m 'Add bsdtar-backed ISO and RAR archive support'
+          git push
