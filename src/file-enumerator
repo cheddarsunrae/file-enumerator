@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Recursively enumerate filesystem files and archive members.
 
-The primary target is Fedora/Linux, but the program uses only the Python 3
-standard library and remains portable to other Python 3 platforms.
+The primary target is Fedora/Linux. ZIP and TAR use the Python 3 standard
+library; additional archive formats use the optional bsdtar command.
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ import argparse
 import csv
 import fnmatch
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -20,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional, Sequence
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 ZIP_ARCHIVE_SUFFIXES = (
     ".zip",
@@ -42,7 +44,7 @@ TAR_ARCHIVE_SUFFIXES = (
     ".tar.xz",
     ".txz",
 )
-UNSUPPORTED_ARCHIVE_SUFFIXES = (
+BSDTAR_ARCHIVE_SUFFIXES = (
     ".7z",
     ".rar",
     ".cab",
@@ -50,14 +52,24 @@ UNSUPPORTED_ARCHIVE_SUFFIXES = (
     ".iso",
     ".lha",
     ".lzh",
-    ".ace",
+    ".ar",
+    ".xar",
+    ".rpm",
+    ".deb",
     ".tar.zst",
     ".tzst",
+)
+UNSUPPORTED_ARCHIVE_SUFFIXES = (
+    ".ace",
 )
 
 
 class CLIUsageError(ValueError):
     """Raised instead of allowing argparse to terminate without error logging."""
+
+
+class ArchiveBackendMissing(RuntimeError):
+    """Raised when an optional archive helper is required but unavailable."""
 
 
 class LoggingArgumentParser(argparse.ArgumentParser):
@@ -295,12 +307,22 @@ def archived_record(
     )
 
 
+def bsdtar_archive_format(path: Path) -> str:
+    lower_name = path.name.casefold()
+    for suffix in sorted(BSDTAR_ARCHIVE_SUFFIXES, key=len, reverse=True):
+        if lower_name.endswith(suffix):
+            return suffix.lstrip(".")
+    return "libarchive"
+
+
 def archive_kind(path: Path) -> Optional[str]:
     lower_name = path.name.casefold()
     if lower_name.endswith(ZIP_ARCHIVE_SUFFIXES):
         return "zip"
     if lower_name.endswith(TAR_ARCHIVE_SUFFIXES):
         return "tar"
+    if lower_name.endswith(BSDTAR_ARCHIVE_SUFFIXES):
+        return "bsdtar"
     if lower_name.endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
         return "unsupported"
     return None
@@ -393,6 +415,64 @@ def enumerate_tar_members(
     return records
 
 
+def enumerate_bsdtar_members(
+    path: Path,
+    root: Path,
+    filters: FilterConfig,
+) -> list[FileRecord]:
+    bsdtar = shutil.which("bsdtar")
+    if bsdtar is None:
+        raise ArchiveBackendMissing(
+            "bsdtar is required for this archive format; on Fedora run: "
+            "sudo dnf install bsdtar"
+        )
+
+    completed = subprocess.run(
+        [bsdtar, "-tf", str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"bsdtar exited with status {completed.returncode}"
+        raise RuntimeError(detail)
+
+    records: list[FileRecord] = []
+    archive_relative = PurePosixPath(path.relative_to(root).as_posix())
+    archive_format = bsdtar_archive_format(path)
+    for raw_name in completed.stdout.splitlines():
+        member_name = normalize_archive_member_name(raw_name)
+        if not member_name or raw_name.rstrip().endswith("/"):
+            continue
+        member_relative = PurePosixPath(member_name)
+        if not member_relative.name:
+            continue
+        folder_values = archive_folder_candidates(archive_relative, member_relative)
+        if not record_matches(
+            member_relative.name,
+            member_relative.suffix,
+            folder_values,
+            filters,
+        ):
+            continue
+        records.append(
+            archived_record(
+                archive_path=path,
+                root=root,
+                member_name=member_name,
+                size_bytes=0,
+                modified_utc="",
+                is_symlink=False,
+                archive_format=archive_format,
+            )
+        )
+    return records
+
+
 def enumerate_archive_members(
     path: Path,
     root: Path,
@@ -404,17 +484,22 @@ def enumerate_archive_members(
     if kind == "unsupported":
         return [], [
             f"UNSUPPORTED ARCHIVE: {path}: format is not supported by the "
-            "dependency-free archive reader"
+            "configured archive readers"
         ]
 
     try:
         if kind == "zip":
             return enumerate_zip_members(path, root, filters), []
-        return enumerate_tar_members(path, root, filters), []
+        if kind == "tar":
+            return enumerate_tar_members(path, root, filters), []
+        return enumerate_bsdtar_members(path, root, filters), []
+    except ArchiveBackendMissing as error:
+        return [], [f"ARCHIVE BACKEND MISSING: {path}: {error}"]
     except (
         OSError,
         EOFError,
         RuntimeError,
+        subprocess.SubprocessError,
         tarfile.TarError,
         zipfile.BadZipFile,
         ValueError,
@@ -602,7 +687,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = LoggingArgumentParser(
         prog="file-enumerator",
         description=(
-            "Recursively enumerate filesystem files and supported archive members "
+            "Recursively enumerate filesystem files and archive members, using native "
+            "ZIP/TAR readers and optional bsdtar support for broader formats, "
             "with filetype, filename, and foldername include/exclude filters."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

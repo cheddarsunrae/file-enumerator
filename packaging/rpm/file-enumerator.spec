@@ -1,5 +1,5 @@
 Name:           file-enumerator
-Version:        1.1.1
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        Recursive file inventory tool with include and exclude filters
 
@@ -10,12 +10,14 @@ Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 Requires:       python3
 Requires:       bash-completion
+Requires:       bsdtar
 
 %description
 file-enumerator recursively inventories files beneath a root directory and
-member filenames inside supported ZIP and TAR-family archives. It can include
-or exclude file extensions, filename globs, and folder globs, and can write TXT,
-CSV, and ZIP output. It uses only the Python standard library.
+member filenames inside ZIP, TAR, RAR, ISO, 7-Zip, and other supported archives.
+It can include or exclude file extensions, filename globs, and folder globs, and
+can write TXT, CSV, and ZIP output. ZIP and TAR use Python's standard library;
+broader formats are listed through bsdtar without extraction.
 
 %prep
 %autosetup
@@ -37,6 +39,9 @@ python3 -m unittest discover -s tests -v
 %{_datadir}/bash-completion/completions/file-enumerator
 
 %changelog
+* Tue Jul 21 2026 Cheddar SunRae Logistics Inc. <shane@cheddar.team> - 1.2.0-1
+- Add bsdtar-backed RAR, ISO, 7-Zip, CAB, and broad archive listing
+
 * Tue Jul 21 2026 Cheddar SunRae Logistics Inc. <shane@cheddar.team> - 1.1.1-1
 - Release the project publicly under the MIT License
 
