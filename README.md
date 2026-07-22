@@ -12,7 +12,7 @@ implementation is retained under `contrib/windows/`.
 - Archived entries are clearly marked in TXT and CSV output.
 - Include or exclude file extensions, filename globs, and folder globs.
 - Filters apply to both normal files and files stored inside archives.
-- TXT, CSV, or combined output.
+- Simple exact-file output with `-o/--output`, plus advanced TXT/CSV/ZIP modes.
 - Optional ZIP or ZIP-only output.
 - Case-insensitive matching by default, with an explicit case-sensitive mode.
 - Directory symlinks are not followed by default.
@@ -46,7 +46,8 @@ returns exit status 2, prints the missing-backend failure, and writes it to the
 error log. `.ace` remains explicitly unsupported. Nested archive files are listed
 as members but are not recursively opened.
 
-Use `--no-archives` when only filesystem entries are wanted.
+Use `--exclude-archives` when only filesystem entries are wanted. The older
+`--no-archives` spelling remains available as a compatibility alias.
 
 The archive functionality described here applies to the primary Linux/Python
 command. The retained PowerShell script has not yet been brought to archive
@@ -71,7 +72,21 @@ trees, unexpected branches, mismatched remotes, and non-public repositories.
 
 ## Examples
 
-Basic TXT and CSV inventory, including supported archive members:
+Write every filesystem file and supported archive member beneath `/master`
+to one text file:
+
+```bash
+file-enumerator /master -o files.txt
+```
+
+Exclude archive contents while still listing the archive container files:
+
+```bash
+file-enumerator /master -o files.txt --exclude-archives
+```
+
+The older advanced mode still creates timestamped TXT and CSV reports when no
+`-o/--output` path is supplied:
 
 ```bash
 file-enumerator /backup/Downloads
@@ -119,7 +134,7 @@ complete manual.
 - Use `<none>` as a filetype to match files without an extension.
 - Excluded filesystem folders are pruned and never scanned.
 - Filtering an archive container does not prevent its members from being
-  evaluated; use `--no-archives` to disable member traversal entirely.
+  evaluated; use `--exclude-archives` to disable member traversal entirely.
 
 ## Output
 
@@ -160,8 +175,9 @@ stderr. When one or more failures occur, the program also writes:
 file_enum_YYYYMMDD_HHMMSS_microseconds_errors.txt
 ```
 
-The error log is written to `--output-dir`. If that location cannot be used, the
-program attempts to write it in the current directory. `--quiet` never suppresses
+With `-o/--output`, the error log is written beside the requested output file.
+In advanced mode it is written to `--output-dir`. If that location cannot be used,
+the program attempts to write it in the current directory. `--quiet` never suppresses
 errors. With `--zip-only`, the error log is included in the ZIP and also retained
 as a loose file.
 

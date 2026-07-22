@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 — 2026-07-22
+
+- Added `-o/--output` for an exact `.txt` or `.csv` report path.
+- Added `--exclude-archives` as the preferred archive-disable option.
+- Retained `--no-archives` and the advanced output flags for compatibility.
+- Added regression coverage and updated help, completion, and documentation.
+
 ## 1.2.0 — 2026-07-21
 
 - Added optional `bsdtar` archive listing for RAR, ISO, 7-Zip, CAB, CPIO,

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional, Sequence
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 ZIP_ARCHIVE_SUFFIXES = (
     ".zip",
@@ -564,7 +564,7 @@ def enumerate_files(
             except (OSError, ValueError) as error:
                 errors.append(f"FILE ERROR: {path}: {error}")
 
-            if not args.no_archives:
+            if not args.exclude_archives:
                 archive_records, archive_errors = enumerate_archive_members(
                     path, root, filters
                 )
@@ -698,6 +698,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("root", help="Root folder to enumerate")
     parser.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="Write one report to this exact .txt or .csv path",
+    )
+    parser.add_argument(
         "--include-filetype",
         "--include-ext",
         action="append",
@@ -740,10 +746,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exclude matching folders and their descendants",
     )
     parser.add_argument(
-        "--format", choices=("txt", "csv", "both"), default="both"
+        "--format",
+        choices=("txt", "csv", "both"),
+        default=None,
+        help="Advanced mode output format; defaults to both",
     )
     parser.add_argument(
-        "--output-dir", default=".", help="Directory for generated output"
+        "--output-dir",
+        default=None,
+        help="Advanced mode directory for generated output",
     )
     parser.add_argument(
         "--basename", help="Output base name without extension"
@@ -763,9 +774,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create the ZIP and remove loose inventory reports; error logs remain loose",
     )
     parser.add_argument(
+        "--exclude-archives",
         "--no-archives",
+        dest="exclude_archives",
         action="store_true",
-        help="Do not inspect supported archives for member filenames",
+        help="Do not inspect archives for member filenames",
     )
     parser.add_argument(
         "--follow-links",
@@ -792,40 +805,86 @@ def main() -> int:
     parser = build_parser()
     args: Optional[argparse.Namespace] = None
     output_dir = Path.cwd()
+    output_path: Optional[Path] = None
 
     try:
         args = parser.parse_args()
-        if args.zip_only:
-            args.zip = True
-
         root = Path(args.root).expanduser().resolve()
-        output_dir = Path(args.output_dir).expanduser().resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
 
-        basename = args.basename or f"file_inventory_{timestamp}"
-        if Path(basename).name != basename:
-            raise CLIUsageError("--basename must be a file name, not a path")
+        if args.output:
+            conflicts: list[str] = []
+            if args.format is not None:
+                conflicts.append("--format")
+            if args.output_dir is not None:
+                conflicts.append("--output-dir")
+            if args.basename is not None:
+                conflicts.append("--basename")
+            if args.zip:
+                conflicts.append("--zip")
+            if args.zip_only:
+                conflicts.append("--zip-only")
+            if conflicts:
+                raise CLIUsageError(
+                    "-o/--output cannot be combined with " + ", ".join(conflicts)
+                )
+
+            output_path = Path(args.output).expanduser()
+            if not output_path.is_absolute():
+                output_path = Path.cwd() / output_path
+            output_path = output_path.resolve()
+            output_suffix = output_path.suffix.casefold()
+            if output_suffix not in {".txt", ".csv"}:
+                raise CLIUsageError("-o/--output must end in .txt or .csv")
+            if output_path.exists() and output_path.is_dir():
+                raise CLIUsageError("-o/--output must name a file, not a directory")
+
+            output_dir = output_path.parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_format = output_suffix[1:]
+            basename = output_path.stem
+        else:
+            if args.zip_only:
+                args.zip = True
+            output_dir = Path(args.output_dir or ".").expanduser().resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_format = args.format or "both"
+            basename = args.basename or f"file_inventory_{timestamp}"
+            if Path(basename).name != basename:
+                raise CLIUsageError("--basename must be a file name, not a path")
 
         error_log_path = output_dir / f"file_enum_{error_timestamp}_errors.txt"
-        prospective_outputs = {
-            output_dir / f"{basename}.txt",
-            output_dir / f"{basename}.csv",
-            output_dir / f"{basename}.zip",
-            error_log_path,
-        }
+        prospective_outputs = {error_log_path}
+        if output_path is not None:
+            prospective_outputs.add(output_path)
+        else:
+            prospective_outputs.update(
+                {
+                    output_dir / f"{basename}.txt",
+                    output_dir / f"{basename}.csv",
+                    output_dir / f"{basename}.zip",
+                }
+            )
         ignored_paths = {
             os.path.normcase(os.path.abspath(path)) for path in prospective_outputs
         }
         records, errors = enumerate_files(args, ignored_paths=ignored_paths)
         generated_files: list[Path] = []
 
-        if args.format in {"txt", "both"}:
-            txt_path = output_dir / f"{basename}.txt"
+        if output_format in {"txt", "both"}:
+            txt_path = (
+                output_path
+                if output_path is not None and output_format == "txt"
+                else output_dir / f"{basename}.txt"
+            )
             write_txt(txt_path, records, root, args.txt_path_mode, generated_utc)
             generated_files.append(txt_path)
 
-        if args.format in {"csv", "both"}:
-            csv_path = output_dir / f"{basename}.csv"
+        if output_format in {"csv", "both"}:
+            csv_path = (
+                output_path
+                if output_path is not None and output_format == "csv"
+                else output_dir / f"{basename}.csv"
+            )
             write_csv(csv_path, records)
             generated_files.append(csv_path)
 

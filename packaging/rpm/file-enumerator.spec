@@ -1,5 +1,5 @@
 Name:           file-enumerator
-Version:        1.2.0
+Version:        1.2.1
 Release:        1%{?dist}
 Summary:        Recursive file inventory tool with include and exclude filters
 
@@ -39,6 +39,9 @@ python3 -m unittest discover -s tests -v
 %{_datadir}/bash-completion/completions/file-enumerator
 
 %changelog
+* Wed Jul 22 2026 Cheddar SunRae Logistics Inc. <shane@cheddar.team> - 1.2.1-1
+- Add simple exact-file output and exclude-archives alias
+
 * Tue Jul 21 2026 Cheddar SunRae Logistics Inc. <shane@cheddar.team> - 1.2.0-1
 - Add bsdtar-backed RAR, ISO, 7-Zip, CAB, and broad archive listing
 

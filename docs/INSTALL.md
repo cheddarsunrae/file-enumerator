@@ -74,7 +74,7 @@ Build and stage the source archive:
 ```bash
 make dist
 rpmdev-setuptree
-cp dist/file-enumerator-1.2.0.tar.gz ~/rpmbuild/SOURCES/
+cp dist/file-enumerator-1.2.1.tar.gz ~/rpmbuild/SOURCES/
 cp packaging/rpm/file-enumerator.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/file-enumerator.spec
 ```
