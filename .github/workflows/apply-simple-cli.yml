@@ -1,0 +1,45 @@
+name: apply-simple-cli
+
+on:
+  push:
+    branches:
+      - agent/simple-cli
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply guarded migration
+        run: python3 tools/apply_simple_cli.py
+
+      - name: Validate source and tests
+        run: |
+          python3 -m py_compile src/file-enumerator tests/test_file_enumerator.py
+          make test
+          git diff --check
+
+      - name: Validate staged installation
+        run: |
+          stage="$(mktemp -d)"
+          make install DESTDIR="$stage" PREFIX=/usr/local
+          test -x "$stage/usr/local/bin/file-enumerator"
+          test -f "$stage/usr/local/share/man/man1/file-enumerator.1"
+          test -f "$stage/usr/local/share/bash-completion/completions/file-enumerator"
+
+      - name: Commit validated product changes
+        run: |
+          rm -f .simple-cli-trigger
+          git rm -f tools/apply_simple_cli.py .github/workflows/apply-simple-cli.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Simplify output and archive exclusion CLI'
+          git push
