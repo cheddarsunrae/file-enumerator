@@ -1,0 +1,791 @@
+#!/usr/bin/env python3
+"""Recursively enumerate filesystem files and archive members.
+
+The primary target is Fedora/Linux, but the program uses only the Python 3
+standard library and remains portable to other Python 3 platforms.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import fnmatch
+import os
+import stat
+import sys
+import tarfile
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Iterable, Optional, Sequence
+
+VERSION = "1.1.1"
+
+ZIP_ARCHIVE_SUFFIXES = (
+    ".zip",
+    ".jar",
+    ".war",
+    ".ear",
+    ".whl",
+    ".apk",
+    ".xpi",
+    ".epub",
+)
+TAR_ARCHIVE_SUFFIXES = (
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+)
+UNSUPPORTED_ARCHIVE_SUFFIXES = (
+    ".7z",
+    ".rar",
+    ".cab",
+    ".cpio",
+    ".iso",
+    ".lha",
+    ".lzh",
+    ".ace",
+    ".tar.zst",
+    ".tzst",
+)
+
+
+class CLIUsageError(ValueError):
+    """Raised instead of allowing argparse to terminate without error logging."""
+
+
+class LoggingArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise CLIUsageError(message)
+
+
+@dataclass(frozen=True)
+class FilterConfig:
+    include_ext: set[str]
+    exclude_ext: set[str]
+    include_name: list[str]
+    exclude_name: list[str]
+    include_folder: list[str]
+    exclude_folder: list[str]
+    case_sensitive: bool
+
+
+@dataclass(frozen=True)
+class FileRecord:
+    relative_path: str
+    full_path: str
+    name: str
+    extension: str
+    parent_relative: str
+    size_bytes: int
+    modified_utc: str
+    is_symlink: bool
+    is_archived: bool
+    archive_path: str
+    archive_member_path: str
+    archive_format: str
+
+
+def split_values(raw_values: Optional[Sequence[str]]) -> list[str]:
+    """Expand repeated and comma-separated CLI values."""
+    values: list[str] = []
+    for raw in raw_values or []:
+        for value in raw.split(","):
+            value = value.strip()
+            if value:
+                values.append(value)
+    return values
+
+
+def normalize_extension(value: str) -> str:
+    """Accept pdf, .pdf, *.pdf, or <none>."""
+    value = value.strip()
+    if value.casefold() in {"<none>", "none", "[none]"}:
+        return ""
+    if value.startswith("*."):
+        value = value[1:]
+    elif value.startswith("*"):
+        value = value[1:]
+    if value and not value.startswith("."):
+        value = f".{value}"
+    return value
+
+
+def normalize_extensions(values: Sequence[str], case_sensitive: bool) -> set[str]:
+    normalized = {normalize_extension(value) for value in values}
+    if not case_sensitive:
+        return {value.casefold() for value in normalized}
+    return normalized
+
+
+def value_matches(value: str, pattern: str, case_sensitive: bool) -> bool:
+    if not case_sensitive:
+        value = value.casefold()
+        pattern = pattern.casefold()
+    return fnmatch.fnmatchcase(value, pattern)
+
+
+def any_pattern_matches(
+    candidates: Iterable[str], patterns: Sequence[str], case_sensitive: bool
+) -> bool:
+    return any(
+        value_matches(candidate, pattern, case_sensitive)
+        for candidate in candidates
+        for pattern in patterns
+    )
+
+
+def deduplicate(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def folder_candidates(relative_parent: Path | PurePosixPath) -> list[str]:
+    if str(relative_parent) in {"", "."}:
+        return []
+    normalized = relative_parent.as_posix()
+    return deduplicate([normalized, *relative_parent.parts])
+
+
+def archive_folder_candidates(
+    archive_relative: PurePosixPath, member_relative: PurePosixPath
+) -> list[str]:
+    archive_parent = archive_relative.parent
+    member_parent = member_relative.parent
+    values: list[str] = []
+    values.extend(folder_candidates(archive_parent))
+
+    # Treat the archive itself as a virtual folder for filtering purposes.
+    values.append(archive_relative.as_posix())
+    values.extend(archive_relative.parts)
+
+    if str(member_parent) not in {"", "."}:
+        values.extend(folder_candidates(member_parent))
+        values.append(f"{archive_relative.as_posix()}::{member_parent.as_posix()}")
+        values.append(f"{archive_relative.as_posix()}/{member_parent.as_posix()}")
+
+    return deduplicate(values)
+
+
+def build_filter_config(args: argparse.Namespace) -> FilterConfig:
+    return FilterConfig(
+        include_ext=normalize_extensions(
+            split_values(args.include_filetype), args.case_sensitive
+        ),
+        exclude_ext=normalize_extensions(
+            split_values(args.exclude_filetype), args.case_sensitive
+        ),
+        include_name=split_values(args.include_filename),
+        exclude_name=split_values(args.exclude_filename),
+        include_folder=split_values(args.include_foldername),
+        exclude_folder=split_values(args.exclude_foldername),
+        case_sensitive=args.case_sensitive,
+    )
+
+
+def record_matches(
+    name: str,
+    extension: str,
+    folder_values: Sequence[str],
+    filters: FilterConfig,
+) -> bool:
+    comparable_extension = (
+        extension if filters.case_sensitive else extension.casefold()
+    )
+
+    if filters.exclude_ext and comparable_extension in filters.exclude_ext:
+        return False
+    if filters.include_ext and comparable_extension not in filters.include_ext:
+        return False
+    if filters.exclude_name and any_pattern_matches(
+        [name], filters.exclude_name, filters.case_sensitive
+    ):
+        return False
+    if filters.include_name and not any_pattern_matches(
+        [name], filters.include_name, filters.case_sensitive
+    ):
+        return False
+    if filters.exclude_folder and any_pattern_matches(
+        folder_values, filters.exclude_folder, filters.case_sensitive
+    ):
+        return False
+    if filters.include_folder and not any_pattern_matches(
+        folder_values, filters.include_folder, filters.case_sensitive
+    ):
+        return False
+    return True
+
+
+def filesystem_record(path: Path, root: Path) -> FileRecord:
+    stat_result = path.stat()
+    relative = path.relative_to(root)
+    extension = path.suffix
+    parent_relative = relative.parent.as_posix()
+    if parent_relative == ".":
+        parent_relative = ""
+    modified = datetime.fromtimestamp(
+        stat_result.st_mtime, tz=timezone.utc
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return FileRecord(
+        relative_path=relative.as_posix(),
+        full_path=str(path),
+        name=path.name,
+        extension=extension,
+        parent_relative=parent_relative,
+        size_bytes=stat_result.st_size,
+        modified_utc=modified,
+        is_symlink=path.is_symlink(),
+        is_archived=False,
+        archive_path="",
+        archive_member_path="",
+        archive_format="",
+    )
+
+
+def normalize_archive_member_name(raw_name: str) -> str:
+    normalized = raw_name.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.rstrip("/")
+
+
+def archived_record(
+    archive_path: Path,
+    root: Path,
+    member_name: str,
+    size_bytes: int,
+    modified_utc: str,
+    is_symlink: bool,
+    archive_format: str,
+) -> FileRecord:
+    archive_relative = PurePosixPath(archive_path.relative_to(root).as_posix())
+    member_relative = PurePosixPath(member_name)
+    member_parent = member_relative.parent.as_posix()
+    if member_parent == ".":
+        member_parent = ""
+    parent_relative = archive_relative.as_posix()
+    if member_parent:
+        parent_relative = f"{parent_relative}::{member_parent}"
+    virtual_relative = f"{archive_relative.as_posix()}::{member_relative.as_posix()}"
+    virtual_full = f"{archive_path}::{member_relative.as_posix()}"
+    return FileRecord(
+        relative_path=virtual_relative,
+        full_path=virtual_full,
+        name=member_relative.name,
+        extension=member_relative.suffix,
+        parent_relative=parent_relative,
+        size_bytes=size_bytes,
+        modified_utc=modified_utc,
+        is_symlink=is_symlink,
+        is_archived=True,
+        archive_path=archive_relative.as_posix(),
+        archive_member_path=member_relative.as_posix(),
+        archive_format=archive_format,
+    )
+
+
+def archive_kind(path: Path) -> Optional[str]:
+    lower_name = path.name.casefold()
+    if lower_name.endswith(ZIP_ARCHIVE_SUFFIXES):
+        return "zip"
+    if lower_name.endswith(TAR_ARCHIVE_SUFFIXES):
+        return "tar"
+    if lower_name.endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
+        return "unsupported"
+    return None
+
+
+def enumerate_zip_members(
+    path: Path,
+    root: Path,
+    filters: FilterConfig,
+) -> list[FileRecord]:
+    records: list[FileRecord] = []
+    archive_relative = PurePosixPath(path.relative_to(root).as_posix())
+    with zipfile.ZipFile(path, mode="r") as archive:
+        for member in archive.infolist():
+            member_name = normalize_archive_member_name(member.filename)
+            if not member_name or member.is_dir():
+                continue
+            member_relative = PurePosixPath(member_name)
+            if not member_relative.name:
+                continue
+            mode = member.external_attr >> 16
+            is_symlink = stat.S_IFMT(mode) == stat.S_IFLNK
+            folder_values = archive_folder_candidates(
+                archive_relative, member_relative
+            )
+            if not record_matches(
+                member_relative.name,
+                member_relative.suffix,
+                folder_values,
+                filters,
+            ):
+                continue
+            records.append(
+                archived_record(
+                    archive_path=path,
+                    root=root,
+                    member_name=member_name,
+                    size_bytes=member.file_size,
+                    modified_utc="",
+                    is_symlink=is_symlink,
+                    archive_format="zip",
+                )
+            )
+    return records
+
+
+def enumerate_tar_members(
+    path: Path,
+    root: Path,
+    filters: FilterConfig,
+) -> list[FileRecord]:
+    records: list[FileRecord] = []
+    archive_relative = PurePosixPath(path.relative_to(root).as_posix())
+    with tarfile.open(path, mode="r:*") as archive:
+        for member in archive:
+            if not (member.isfile() or member.issym() or member.islnk()):
+                continue
+            member_name = normalize_archive_member_name(member.name)
+            if not member_name:
+                continue
+            member_relative = PurePosixPath(member_name)
+            if not member_relative.name:
+                continue
+            folder_values = archive_folder_candidates(
+                archive_relative, member_relative
+            )
+            if not record_matches(
+                member_relative.name,
+                member_relative.suffix,
+                folder_values,
+                filters,
+            ):
+                continue
+            modified = ""
+            if member.mtime is not None:
+                modified = datetime.fromtimestamp(
+                    member.mtime, tz=timezone.utc
+                ).isoformat(timespec="seconds").replace("+00:00", "Z")
+            records.append(
+                archived_record(
+                    archive_path=path,
+                    root=root,
+                    member_name=member_name,
+                    size_bytes=member.size,
+                    modified_utc=modified,
+                    is_symlink=member.issym() or member.islnk(),
+                    archive_format="tar",
+                )
+            )
+    return records
+
+
+def enumerate_archive_members(
+    path: Path,
+    root: Path,
+    filters: FilterConfig,
+) -> tuple[list[FileRecord], list[str]]:
+    kind = archive_kind(path)
+    if kind is None:
+        return [], []
+    if kind == "unsupported":
+        return [], [
+            f"UNSUPPORTED ARCHIVE: {path}: format is not supported by the "
+            "dependency-free archive reader"
+        ]
+
+    try:
+        if kind == "zip":
+            return enumerate_zip_members(path, root, filters), []
+        return enumerate_tar_members(path, root, filters), []
+    except (
+        OSError,
+        EOFError,
+        RuntimeError,
+        tarfile.TarError,
+        zipfile.BadZipFile,
+        ValueError,
+    ) as error:
+        return [], [f"ARCHIVE ERROR: {path}: {error}"]
+
+
+def enumerate_files(
+    args: argparse.Namespace, ignored_paths: Optional[set[str]] = None
+) -> tuple[list[FileRecord], list[str]]:
+    root = Path(args.root).expanduser().resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Root path does not exist: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Root path is not a directory: {root}")
+
+    filters = build_filter_config(args)
+    records: list[FileRecord] = []
+    errors: list[str] = []
+    ignored_paths = ignored_paths or set()
+
+    def on_walk_error(error: OSError) -> None:
+        errors.append(f"WALK ERROR: {error}")
+
+    for current_dir, dirnames, filenames in os.walk(
+        root, topdown=True, onerror=on_walk_error, followlinks=args.follow_links
+    ):
+        current_path = Path(current_dir)
+
+        kept_dirs: list[str] = []
+        for dirname in dirnames:
+            child_path = current_path / dirname
+            relative_child = child_path.relative_to(root)
+            candidates = [relative_child.as_posix(), *relative_child.parts]
+
+            if filters.exclude_folder and any_pattern_matches(
+                candidates, filters.exclude_folder, filters.case_sensitive
+            ):
+                continue
+            if not args.follow_links and child_path.is_symlink():
+                continue
+            kept_dirs.append(dirname)
+        dirnames[:] = kept_dirs
+
+        relative_parent = current_path.relative_to(root)
+        parent_candidates = folder_candidates(relative_parent)
+
+        for filename in filenames:
+            path = current_path / filename
+            normalized_path = os.path.normcase(os.path.abspath(path))
+            if normalized_path in ignored_paths:
+                continue
+
+            try:
+                if record_matches(
+                    filename,
+                    path.suffix,
+                    parent_candidates,
+                    filters,
+                ):
+                    records.append(filesystem_record(path, root))
+            except (OSError, ValueError) as error:
+                errors.append(f"FILE ERROR: {path}: {error}")
+
+            if not args.no_archives:
+                archive_records, archive_errors = enumerate_archive_members(
+                    path, root, filters
+                )
+                records.extend(archive_records)
+                errors.extend(archive_errors)
+
+    records.sort(key=lambda item: item.relative_path.casefold())
+    return records, errors
+
+
+def display_path(record: FileRecord, mode: str) -> str:
+    value = record.full_path if mode == "full" else record.relative_path
+    if record.is_archived:
+        return f"[ARCHIVED] {value}"
+    return value
+
+
+def write_txt(
+    path: Path,
+    records: Sequence[FileRecord],
+    root: Path,
+    mode: str,
+    generated_utc: str,
+) -> None:
+    archived_count = sum(record.is_archived for record in records)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"# Root: {root}\n")
+        handle.write(f"# Generated UTC: {generated_utc}\n")
+        handle.write(f"# File count: {len(records)}\n")
+        handle.write(f"# Archive member count: {archived_count}\n")
+        handle.write(f"# TXT path mode: {mode}\n")
+        for record in records:
+            handle.write(f"{display_path(record, mode)}\n")
+
+
+def write_csv(path: Path, records: Sequence[FileRecord]) -> None:
+    fieldnames = [
+        "relative_path",
+        "full_path",
+        "name",
+        "extension",
+        "parent_relative",
+        "size_bytes",
+        "modified_utc",
+        "is_symlink",
+        "is_archived",
+        "archive_path",
+        "archive_member_path",
+        "archive_format",
+    ]
+    # utf-8-sig makes the CSV open cleanly in Windows Excel while remaining UTF-8.
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(
+                {
+                    "relative_path": record.relative_path,
+                    "full_path": record.full_path,
+                    "name": record.name,
+                    "extension": record.extension,
+                    "parent_relative": record.parent_relative,
+                    "size_bytes": record.size_bytes,
+                    "modified_utc": record.modified_utc,
+                    "is_symlink": record.is_symlink,
+                    "is_archived": record.is_archived,
+                    "archive_path": record.archive_path,
+                    "archive_member_path": record.archive_member_path,
+                    "archive_format": record.archive_format,
+                }
+            )
+
+
+def make_zip(zip_path: Path, files: Sequence[Path]) -> None:
+    with zipfile.ZipFile(
+        zip_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        for file_path in files:
+            archive.write(file_path, arcname=file_path.name)
+
+
+def emit_errors(errors: Sequence[str]) -> None:
+    for error in errors:
+        print(error, file=sys.stderr)
+
+
+def write_error_log_best_effort(
+    errors: Sequence[str], preferred_dir: Path, timestamp: str
+) -> Optional[Path]:
+    if not errors:
+        return None
+
+    filename = f"file_enum_{timestamp}_errors.txt"
+    candidates = [preferred_dir, Path.cwd()]
+    attempted: set[str] = set()
+    failures: list[str] = []
+
+    for directory in candidates:
+        normalized = os.path.normcase(os.path.abspath(directory))
+        if normalized in attempted:
+            continue
+        attempted.add(normalized)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            log_path = directory / filename
+            mode = "a" if log_path.exists() else "w"
+            with log_path.open(mode, encoding="utf-8", newline="\n") as handle:
+                handle.write("\n".join(errors))
+                handle.write("\n")
+            print(f"Error log: {log_path}", file=sys.stderr)
+            return log_path
+        except OSError as error:
+            failures.append(f"ERROR LOG WRITE FAILURE: {directory}: {error}")
+
+    emit_errors(failures)
+    return None
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = LoggingArgumentParser(
+        prog="file-enumerator",
+        description=(
+            "Recursively enumerate filesystem files and supported archive members "
+            "with filetype, filename, and foldername include/exclude filters."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {VERSION}"
+    )
+    parser.add_argument("root", help="Root folder to enumerate")
+    parser.add_argument(
+        "--include-filetype",
+        "--include-ext",
+        action="append",
+        metavar="TYPE",
+        help="Include file extensions (pdf, .pdf, *.pdf, <none>); repeat or comma-separate",
+    )
+    parser.add_argument(
+        "--exclude-filetype",
+        "--exclude-ext",
+        action="append",
+        metavar="TYPE",
+        help="Exclude file extensions; repeat or comma-separate",
+    )
+    parser.add_argument(
+        "--include-filename",
+        "--include-name",
+        action="append",
+        metavar="GLOB",
+        help="Include filename glob(s), such as report* or *.final.docx",
+    )
+    parser.add_argument(
+        "--exclude-filename",
+        "--exclude-name",
+        action="append",
+        metavar="GLOB",
+        help="Exclude filename glob(s), such as ~$* or *.tmp",
+    )
+    parser.add_argument(
+        "--include-foldername",
+        "--include-folder",
+        action="append",
+        metavar="GLOB",
+        help="Include files under matching folder component/path glob(s)",
+    )
+    parser.add_argument(
+        "--exclude-foldername",
+        "--exclude-folder",
+        action="append",
+        metavar="GLOB",
+        help="Exclude matching folders and their descendants",
+    )
+    parser.add_argument(
+        "--format", choices=("txt", "csv", "both"), default="both"
+    )
+    parser.add_argument(
+        "--output-dir", default=".", help="Directory for generated output"
+    )
+    parser.add_argument(
+        "--basename", help="Output base name without extension"
+    )
+    parser.add_argument(
+        "--txt-path-mode",
+        choices=("full", "relative"),
+        default="full",
+        help="Path form written to TXT output",
+    )
+    parser.add_argument(
+        "--zip", action="store_true", help="Create a ZIP containing all generated reports"
+    )
+    parser.add_argument(
+        "--zip-only",
+        action="store_true",
+        help="Create the ZIP and remove loose inventory reports; error logs remain loose",
+    )
+    parser.add_argument(
+        "--no-archives",
+        action="store_true",
+        help="Do not inspect supported archives for member filenames",
+    )
+    parser.add_argument(
+        "--follow-links",
+        action="store_true",
+        help="Follow symbolic directory links (may cross outside the root)",
+    )
+    parser.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        help="Make filename, folder, and extension matching case-sensitive",
+    )
+    parser.add_argument(
+        "--quiet", action="store_true", help="Suppress the completion summary; errors still print"
+    )
+    return parser
+
+
+def main() -> int:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    error_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    generated_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+    parser = build_parser()
+    args: Optional[argparse.Namespace] = None
+    output_dir = Path.cwd()
+
+    try:
+        args = parser.parse_args()
+        if args.zip_only:
+            args.zip = True
+
+        root = Path(args.root).expanduser().resolve()
+        output_dir = Path(args.output_dir).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        basename = args.basename or f"file_inventory_{timestamp}"
+        if Path(basename).name != basename:
+            raise CLIUsageError("--basename must be a file name, not a path")
+
+        error_log_path = output_dir / f"file_enum_{error_timestamp}_errors.txt"
+        prospective_outputs = {
+            output_dir / f"{basename}.txt",
+            output_dir / f"{basename}.csv",
+            output_dir / f"{basename}.zip",
+            error_log_path,
+        }
+        ignored_paths = {
+            os.path.normcase(os.path.abspath(path)) for path in prospective_outputs
+        }
+        records, errors = enumerate_files(args, ignored_paths=ignored_paths)
+        generated_files: list[Path] = []
+
+        if args.format in {"txt", "both"}:
+            txt_path = output_dir / f"{basename}.txt"
+            write_txt(txt_path, records, root, args.txt_path_mode, generated_utc)
+            generated_files.append(txt_path)
+
+        if args.format in {"csv", "both"}:
+            csv_path = output_dir / f"{basename}.csv"
+            write_csv(csv_path, records)
+            generated_files.append(csv_path)
+
+        error_path: Optional[Path] = None
+        if errors:
+            emit_errors(errors)
+            error_path = write_error_log_best_effort(
+                errors, output_dir, error_timestamp
+            )
+            if error_path is not None:
+                generated_files.append(error_path)
+
+        zip_path: Optional[Path] = None
+        if args.zip:
+            zip_path = output_dir / f"{basename}.zip"
+            make_zip(zip_path, generated_files)
+            if args.zip_only:
+                for file_path in generated_files:
+                    if error_path is None or file_path != error_path:
+                        file_path.unlink(missing_ok=True)
+
+        if not args.quiet:
+            archived_count = sum(record.is_archived for record in records)
+            print(f"Root: {root}")
+            print(f"Files matched: {len(records)}")
+            print(f"Archive members matched: {archived_count}")
+            print(f"Errors: {len(errors)}")
+            for file_path in generated_files:
+                if not args.zip_only or file_path == error_path:
+                    print(f"Created: {file_path}")
+            if zip_path is not None:
+                print(f"Created: {zip_path}")
+
+        return 0 if not errors else 2
+    except CLIUsageError as error:
+        parser.print_usage(sys.stderr)
+        message = f"ERROR: {error}"
+        emit_errors([message])
+        write_error_log_best_effort([message], output_dir, error_timestamp)
+        return 1
+    except (OSError, ValueError) as error:
+        message = f"ERROR: {error}"
+        emit_errors([message])
+        write_error_log_best_effort([message], output_dir, error_timestamp)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

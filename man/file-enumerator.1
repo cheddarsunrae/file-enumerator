@@ -1,0 +1,277 @@
+.TH FILE-ENUMERATOR 1 "July 2026" "file-enumerator 1.1.1" "User Commands"
+.SH NAME
+file-enumerator \- recursively inventory files and supported archive members
+.SH SYNOPSIS
+.B file-enumerator
+.RI [ options ]
+.I ROOT
+.SH DESCRIPTION
+.B file-enumerator
+walks
+.I ROOT
+and its subdirectories, applies optional file-extension, filename, and folder
+filters, and writes the matching inventory as text, CSV, or both.
+.PP
+Supported ZIP and TAR-family archives are inspected by default without
+extracting their contents. Archive members are evaluated by the same filters as
+filesystem files and are clearly marked in generated reports.
+.PP
+Exclusions always win. Multiple values within one filter category are treated
+as OR conditions. Different include categories are combined as AND conditions.
+For example, when both an included extension and an included folder are given,
+a file must satisfy both filters.
+.PP
+Matching is case-insensitive by default. Filename and folder filters use
+shell-style glob patterns including
+.BR * ,
+.BR ? ,
+and character ranges such as
+.BR [0-9] .
+Folder patterns match either an individual folder component or the relative
+folder path beneath
+.IR ROOT .
+Archives act as virtual folders for folder-filter matching.
+.SH POSITIONAL ARGUMENTS
+.TP
+.I ROOT
+Root directory to enumerate.
+.SH OPTIONS
+.TP
+.BR --include-filetype " TYPE"
+.TQ
+.BR --include-ext " TYPE"
+Include files with the specified extension. Accepts forms such as
+.BR pdf ,
+.BR .pdf ,
+.BR *.pdf ,
+or
+.B <none>
+for extensionless files. May be repeated or supplied as a comma-separated list.
+.TP
+.BR --exclude-filetype " TYPE"
+.TQ
+.BR --exclude-ext " TYPE"
+Exclude files with the specified extension. May be repeated or comma-separated.
+.TP
+.BR --include-filename " GLOB"
+.TQ
+.BR --include-name " GLOB"
+Include filenames matching the glob. May be repeated or comma-separated.
+.TP
+.BR --exclude-filename " GLOB"
+.TQ
+.BR --exclude-name " GLOB"
+Exclude filenames matching the glob. May be repeated or comma-separated.
+.TP
+.BR --include-foldername " GLOB"
+.TQ
+.BR --include-folder " GLOB"
+Include files whose parent folder component or relative folder path matches the
+glob. For archive members, candidates also include the archive path and member
+folder path. May be repeated or comma-separated.
+.TP
+.BR --exclude-foldername " GLOB"
+.TQ
+.BR --exclude-folder " GLOB"
+Exclude matching folders and their descendants. Excluded filesystem
+directories are pruned and are not scanned. Matching folders inside archives
+exclude only matching archive members.
+.TP
+.BR --format " " { txt , csv , both }
+Select output format. The default is
+.BR both .
+.TP
+.BR --output-dir " DIRECTORY"
+Directory for generated reports. The default is the current directory.
+.TP
+.BR --basename " NAME"
+Base filename without an extension. By default, a timestamped name such as
+.B file_inventory_20260721_235959
+is used. Paths are not accepted.
+.TP
+.BR --txt-path-mode " " { full , relative }
+Write full or root-relative paths to the TXT report. The default is
+.BR full .
+.TP
+.B --zip
+Create a ZIP archive containing all generated reports.
+.TP
+.B --zip-only
+Create the ZIP archive and remove the loose inventory reports. This implies
+.BR --zip .
+Any generated error log remains as a loose file and is also included in the
+ZIP.
+.TP
+.B --no-archives
+Do not inspect supported archives for member filenames. Archive container files
+can still appear as normal filesystem results.
+.TP
+.B --follow-links
+Follow symbolic directory links. This may cross outside the requested root or
+encounter cycles; links are therefore not followed by default.
+.TP
+.B --case-sensitive
+Use case-sensitive extension, filename, and folder matching.
+.TP
+.B --quiet
+Suppress the completion summary. Errors are never suppressed.
+.TP
+.B --version
+Print the program version and exit.
+.TP
+.BR -h , " --help"
+Display command help and exit.
+.SH ARCHIVE SUPPORT
+Archive traversal is enabled by default and does not extract files.
+.PP
+Supported ZIP formats and containers:
+.BR .zip ,
+.BR .jar ,
+.BR .war ,
+.BR .ear ,
+.BR .whl ,
+.BR .apk ,
+.BR .xpi ,
+and
+.BR .epub .
+.PP
+Supported TAR formats:
+.BR .tar ,
+.BR .tar.gz ,
+.BR .tgz ,
+.BR .tar.bz2 ,
+.BR .tbz ,
+.BR .tbz2 ,
+.BR .tar.xz ,
+and
+.BR .txz .
+.PP
+Known archive formats unsupported by the dependency-free backend, including
+.BR .7z ,
+.BR .rar ,
+.BR .cab ,
+.BR .iso ,
+and
+.BR .tar.zst ,
+are reported as failures rather than silently skipped.
+.PP
+Nested archive files are listed as archive members but are not recursively
+opened. Filtering an archive container out of normal output does not prevent
+its members from being evaluated; use
+.B --no-archives
+to disable member traversal entirely.
+.SH OUTPUT
+TXT output begins with comment lines identifying the root, generation time,
+matched-file count, archive-member count, and path mode, followed by one path
+per line. Archive members are prefixed with
+.B [ARCHIVED]
+and use a virtual path such as:
+.PP
+.nf
+[ARCHIVED] archives/sample.zip::docs/report.pdf
+.fi
+.PP
+CSV output contains these columns:
+.BR relative_path ,
+.BR full_path ,
+.BR name ,
+.BR extension ,
+.BR parent_relative ,
+.BR size_bytes ,
+.BR modified_utc ,
+.BR is_symlink ,
+.BR is_archived ,
+.BR archive_path ,
+.BR archive_member_path ,
+and
+.BR archive_format .
+.PP
+ZIP member timestamps are left blank because ZIP timestamps do not reliably
+carry timezone information. TAR member timestamps are written in UTC when
+available.
+.SH FAILURE LOGGING
+Every filesystem, archive, argument, or fatal runtime failure is printed to
+standard error. The program also writes a timestamped file named:
+.PP
+.nf
+file_enum_YYYYMMDD_HHMMSS_microseconds_errors.txt
+.fi
+.PP
+The error log is written under
+.BR --output-dir .
+If that location cannot be used, the current directory is attempted. The error
+log is generated only when failures occur. It is never removed by
+.BR --zip-only .
+.SH EXIT STATUS
+.TP
+.B 0
+Completed without enumeration errors.
+.TP
+.B 1
+The program could not run, for example because arguments were invalid, the root
+path was invalid, or an output file could not be created.
+.TP
+.B 2
+Inventory reports were created, but one or more files, directories, or archives
+could not be read.
+.SH EXAMPLES
+Inventory a directory and supported archive contents as TXT and CSV:
+.PP
+.nf
+file-enumerator /backup/Downloads
+.fi
+.PP
+Include PDF and DOCX files from the filesystem and archives while pruning
+dependency and cache directories:
+.PP
+.nf
+file-enumerator /backup/Downloads \
+  --include-filetype pdf,docx \
+  --exclude-filename '~$*' \
+  --exclude-filename '*.tmp' \
+  --exclude-foldername '.git,node_modules,__pycache__' \
+  --format both
+.fi
+.PP
+Create only a ZIP archive containing relative-path reports:
+.PP
+.nf
+file-enumerator /backup/Downloads \
+  --txt-path-mode relative \
+  --output-dir /backup/inventory-output \
+  --basename downloads_inventory \
+  --zip-only
+.fi
+.PP
+Disable archive traversal:
+.PP
+.nf
+file-enumerator /backup/Downloads --no-archives
+.fi
+.SH FILES
+.TP
+.I /usr/local/bin/file-enumerator
+Default executable location for a source installation.
+.TP
+.I /usr/local/share/man/man1/file-enumerator.1
+Default manual-page location for a source installation.
+.TP
+.I /usr/local/share/bash-completion/completions/file-enumerator
+Default Bash-completion location for a source installation.
+.SH NOTES
+The program intentionally excludes its prospective output files and error log
+from the scan when the output directory is located beneath the enumeration
+root.
+.PP
+The retained PowerShell implementation under
+.I contrib/windows
+has not yet been brought to archive feature parity with the Linux/Python
+command.
+.SH SEE ALSO
+.BR find (1),
+.BR tar (1),
+.BR tree (1),
+.BR unzip (1),
+.BR zip (1)
+.SH AUTHOR
+Cheddar SunRae Logistics Inc.

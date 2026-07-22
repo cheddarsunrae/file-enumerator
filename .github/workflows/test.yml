@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run tests
+        run: make test
+      - name: Validate staged install
+        run: |
+          stage="$(mktemp -d)"
+          make install DESTDIR="$stage" PREFIX=/usr/local
+          test -x "$stage/usr/local/bin/file-enumerator"
+          test -f "$stage/usr/local/share/man/man1/file-enumerator.1"
+          test -f "$stage/usr/local/share/bash-completion/completions/file-enumerator"
