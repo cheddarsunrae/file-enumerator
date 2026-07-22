@@ -13,6 +13,10 @@ _file_enumerator_completion() {
             COMPREPLY=( $(compgen -W 'full relative' -- "$cur") )
             return 0
             ;;
+        -o|--output)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
         --output-dir)
             COMPREPLY=( $(compgen -d -- "$cur") )
             return 0
@@ -33,8 +37,9 @@ _file_enumerator_completion() {
             --exclude-filename --exclude-name
             --include-foldername --include-folder
             --exclude-foldername --exclude-folder
-            --format --output-dir --basename --txt-path-mode
-            --zip --zip-only --no-archives --follow-links --case-sensitive --quiet
+            -o --output --format --output-dir --basename --txt-path-mode
+            --zip --zip-only --exclude-archives --no-archives
+            --follow-links --case-sensitive --quiet
             --version --help
         ' -- "$cur") )
     else

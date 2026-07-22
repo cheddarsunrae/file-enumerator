@@ -1,9 +1,13 @@
-.TH FILE-ENUMERATOR 1 "July 2026" "file-enumerator 1.2.0" "User Commands"
+.TH FILE-ENUMERATOR 1 "July 2026" "file-enumerator 1.2.1" "User Commands"
 .SH NAME
 file-enumerator \- recursively inventory files and supported archive members
 .SH SYNOPSIS
 .B file-enumerator
-.RI [ options ]
+.I ROOT
+.BI "-o " FILE
+.br
+.B file-enumerator
+.RI [ advanced-options ]
 .I ROOT
 .SH DESCRIPTION
 .B file-enumerator
@@ -80,6 +84,22 @@ Exclude matching folders and their descendants. Excluded filesystem
 directories are pruned and are not scanned. Matching folders inside archives
 exclude only matching archive members.
 .TP
+.BR -o " FILE"
+.TQ
+.BR --output " FILE"
+Write exactly one report to the requested path. A
+.B .txt
+filename selects text output and a
+.B .csv
+filename selects CSV output. Relative paths are resolved from the current
+directory. This simple mode cannot be combined with
+.BR --format ,
+.BR --output-dir ,
+.BR --basename ,
+.BR --zip ,
+or
+.BR --zip-only .
+.TP
 .BR --format " " { txt , csv , both }
 Select output format. The default is
 .BR both .
@@ -105,9 +125,13 @@ Create the ZIP archive and remove the loose inventory reports. This implies
 Any generated error log remains as a loose file and is also included in the
 ZIP.
 .TP
+.BR --exclude-archives
+.TQ
 .B --no-archives
-Do not inspect supported archives for member filenames. Archive container files
-can still appear as normal filesystem results.
+Do not inspect archives for member filenames. Archive container files can still
+appear as normal filesystem results. The older
+.B --no-archives
+name is retained as a compatibility alias.
 .TP
 .B --follow-links
 Follow symbolic directory links. This may cross outside the requested root or
@@ -225,7 +249,10 @@ standard error. The program also writes a timestamped file named:
 file_enum_YYYYMMDD_HHMMSS_microseconds_errors.txt
 .fi
 .PP
-The error log is written under
+With
+.BR -o / --output ,
+the error log is written beside the requested report. In advanced mode it is
+written under
 .BR --output-dir .
 If that location cannot be used, the current directory is attempted. The error
 log is generated only when failures occur. It is never removed by
@@ -243,7 +270,19 @@ path was invalid, or an output file could not be created.
 Inventory reports were created, but one or more files, directories, or archives
 could not be read.
 .SH EXAMPLES
-Inventory a directory and supported archive contents as TXT and CSV:
+Write all files and supported archive members beneath /master to one text file:
+.PP
+.nf
+file-enumerator /master -o files.txt
+.fi
+.PP
+Exclude archive contents while retaining archive container files:
+.PP
+.nf
+file-enumerator /master -o files.txt --exclude-archives
+.fi
+.PP
+Create the advanced default TXT and CSV inventory:
 .PP
 .nf
 file-enumerator /backup/Downloads
@@ -274,7 +313,7 @@ file-enumerator /backup/Downloads \
 Disable archive traversal:
 .PP
 .nf
-file-enumerator /backup/Downloads --no-archives
+file-enumerator /backup/Downloads --exclude-archives
 .fi
 .SH FILES
 .TP

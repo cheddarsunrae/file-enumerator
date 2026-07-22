@@ -94,7 +94,7 @@ class FileEnumeratorTests(unittest.TestCase):
     def test_version(self) -> None:
         result = self.run_program("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "file-enumerator 1.2.0")
+        self.assertEqual(result.stdout.strip(), "file-enumerator 1.2.1")
 
     def test_basic_txt_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -440,6 +440,64 @@ class FileEnumeratorTests(unittest.TestCase):
                 self.assertIn(logs[0].name, archive.namelist())
                 self.assertIn("broken_zip_only.txt", archive.namelist())
                 self.assertIn("broken_zip_only.csv", archive.namelist())
+
+    def test_simple_output_path_includes_archives_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_fixture(base)
+            self.add_archive_fixtures(root)
+            output = base / "files.txt"
+            result = self.run_program(
+                str(root),
+                "-o",
+                str(output),
+                "--txt-path-mode",
+                "relative",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output.is_file())
+            self.assertFalse((base / "files.csv").exists())
+            text = output.read_text(encoding="utf-8")
+            self.assertIn("[ARCHIVED] archives/sample.zip::docs/inside.PDF", text)
+            self.assertIn("[ARCHIVED] archives/sample.tar.gz::nested/report.txt", text)
+
+    def test_exclude_archives_alias_omits_archive_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_fixture(base)
+            self.add_archive_fixtures(root)
+            output = base / "files.txt"
+            result = self.run_program(
+                str(root),
+                "-o",
+                str(output),
+                "--exclude-archives",
+                "--txt-path-mode",
+                "relative",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = output.read_text(encoding="utf-8")
+            self.assertNotIn("[ARCHIVED]", text)
+            self.assertIn("archives/sample.zip", text)
+            self.assertIn("archives/sample.tar.gz", text)
+
+    def test_simple_output_rejects_advanced_output_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_fixture(base)
+            output = base / "files.txt"
+            result = self.run_program(
+                str(root),
+                "-o",
+                str(output),
+                "--format",
+                "txt",
+                cwd=base,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("-o/--output cannot be combined with --format", result.stderr)
+            self.assertFalse(output.exists())
+
 
 
 if __name__ == "__main__":
