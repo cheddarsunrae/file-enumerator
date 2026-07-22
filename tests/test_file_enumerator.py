@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -17,7 +18,10 @@ PROGRAM = PROJECT_ROOT / "src" / "file-enumerator"
 
 class FileEnumeratorTests(unittest.TestCase):
     def run_program(
-        self, *args: str, cwd: Path | None = None
+        self,
+        *args: str,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(PROGRAM), *args],
@@ -25,6 +29,7 @@ class FileEnumeratorTests(unittest.TestCase):
             capture_output=True,
             check=False,
             cwd=cwd,
+            env=env,
         )
 
     def make_fixture(self, base: Path) -> Path:
@@ -60,6 +65,28 @@ class FileEnumeratorTests(unittest.TestCase):
             member.mtime = 1_700_000_000
             archive.addfile(member, io.BytesIO(payload))
 
+    def make_fake_bsdtar(self, base: Path) -> Path:
+        bin_dir = base / "fake-bin"
+        bin_dir.mkdir()
+        script = bin_dir / "bsdtar"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "from pathlib import Path\n"
+            "import sys\n"
+            "name = Path(sys.argv[-1]).name.casefold()\n"
+            "if name.endswith('.rar'):\n"
+            "    print('docs/inside-rar.PDF')\n"
+            "    print('empty/')\n"
+            "elif name.endswith('.iso'):\n"
+            "    print('ISO_ROOT/manual.txt')\n"
+            "else:\n"
+            "    print('unsupported fake archive', file=sys.stderr)\n"
+            "    raise SystemExit(3)\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return bin_dir
+
     def read_csv(self, path: Path) -> list[dict[str, str]]:
         with path.open(encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle))
@@ -67,7 +94,7 @@ class FileEnumeratorTests(unittest.TestCase):
     def test_version(self) -> None:
         result = self.run_program("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "file-enumerator 1.1.1")
+        self.assertEqual(result.stdout.strip(), "file-enumerator 1.2.0")
 
     def test_basic_txt_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -304,11 +331,72 @@ class FileEnumeratorTests(unittest.TestCase):
                 logs[0].read_text(encoding="utf-8"),
             )
 
+    def test_bsdtar_backend_lists_rar_and_iso(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_fixture(base)
+            archive_dir = root / "archives"
+            archive_dir.mkdir()
+            (archive_dir / "sample.rar").write_bytes(b"rar fixture")
+            (archive_dir / "disc.iso").write_bytes(b"iso fixture")
+            fake_bin = self.make_fake_bsdtar(base)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            output = base / "output"
+            result = self.run_program(
+                str(root),
+                "--output-dir",
+                str(output),
+                "--basename",
+                "external_archives",
+                "--format",
+                "csv",
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = self.read_csv(output / "external_archives.csv")
+            by_path = {row["relative_path"]: row for row in rows}
+            rar_member = "archives/sample.rar::docs/inside-rar.PDF"
+            iso_member = "archives/disc.iso::ISO_ROOT/manual.txt"
+            self.assertEqual(by_path[rar_member]["archive_format"], "rar")
+            self.assertEqual(by_path[iso_member]["archive_format"], "iso")
+            self.assertEqual(by_path[rar_member]["is_archived"], "True")
+            self.assertEqual(by_path[iso_member]["is_archived"], "True")
+
+    def test_missing_bsdtar_backend_is_logged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_fixture(base)
+            (root / "sample.rar").write_bytes(b"rar fixture")
+            empty_bin = base / "empty-bin"
+            empty_bin.mkdir()
+            env = os.environ.copy()
+            env["PATH"] = str(empty_bin)
+            output = base / "output"
+            result = self.run_program(
+                str(root),
+                "--output-dir",
+                str(output),
+                "--basename",
+                "missing_backend",
+                "--format",
+                "csv",
+                env=env,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("ARCHIVE BACKEND MISSING:", result.stderr)
+            self.assertIn("sudo dnf install bsdtar", result.stderr)
+            logs = list(output.glob("file_enum_*_errors.txt"))
+            self.assertEqual(len(logs), 1)
+            log_text = logs[0].read_text(encoding="utf-8")
+            self.assertIn("ARCHIVE BACKEND MISSING:", log_text)
+            self.assertIn("sudo dnf install bsdtar", log_text)
+
     def test_unsupported_archive_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = self.make_fixture(base)
-            (root / "unsupported.7z").write_bytes(b"7z placeholder")
+            (root / "unsupported.ace").write_bytes(b"ACE placeholder")
             output = base / "output"
             result = self.run_program(
                 str(root),

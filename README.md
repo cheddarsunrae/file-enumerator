@@ -22,23 +22,29 @@ implementation is retained under `contrib/windows/`.
 - Proper man page and Bash completion.
 - Source install and uninstall targets.
 - Fedora RPM spec.
-- Standard-library-only Python implementation.
+- Python standard-library core with optional `bsdtar` support for broader formats.
 
 ## Archive support
 
 Archive traversal is enabled by default and does not extract files.
 
-Supported formats:
+The Python standard library handles these formats directly:
 
 - ZIP and common ZIP containers: `.zip`, `.jar`, `.war`, `.ear`, `.whl`,
   `.apk`, `.xpi`, and `.epub`
 - TAR and compressed TAR: `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz`,
   `.tbz2`, `.tar.xz`, and `.txz`
 
-Known archive formats that cannot be read by the dependency-free backend, such
-as `.7z`, `.rar`, `.cab`, `.iso`, and `.tar.zst`, are reported as failures
-rather than silently skipped. Nested archive files are listed as archive
-members but are not recursively opened.
+When `bsdtar` is installed, File Enumerator also lists members from `.rar`,
+`.iso`, `.7z`, `.cab`, `.cpio`, `.lha`, `.lzh`, `.ar`, `.xar`, `.rpm`, `.deb`,
+`.tar.zst`, and `.tzst` files. Fedora provides `bsdtar` as a standalone package.
+Encrypted RAR headers, malformed archives, and formats rejected by libarchive are
+reported as failures and written to the timestamped error log.
+
+If a broad-format archive is encountered without `bsdtar`, the scan continues,
+returns exit status 2, prints the missing-backend failure, and writes it to the
+error log. `.ace` remains explicitly unsupported. Nested archive files are listed
+as members but are not recursively opened.
 
 Use `--no-archives` when only filesystem entries are wanted.
 
@@ -49,7 +55,7 @@ feature parity.
 ## Fedora installation
 
 ```bash
-sudo dnf install python3 make man-db bash-completion
+sudo dnf install python3 make man-db bash-completion bsdtar
 ./scripts/install.sh
 hash -r
 file-enumerator --version
@@ -141,7 +147,9 @@ CSV columns:
 - `archive_format`
 
 ZIP member timestamps are left blank because the ZIP format does not reliably
-store a timezone. TAR member timestamps are emitted in UTC when available.
+store a timezone. TAR member timestamps are emitted in UTC when available. The
+plain `bsdtar -t` listing used for broad formats does not expose portable size,
+timestamp, or symlink metadata, so those fields are emitted as zero/blank/false.
 
 ## Failure logging
 

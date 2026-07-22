@@ -1,4 +1,4 @@
-.TH FILE-ENUMERATOR 1 "July 2026" "file-enumerator 1.1.1" "User Commands"
+.TH FILE-ENUMERATOR 1 "July 2026" "file-enumerator 1.2.0" "User Commands"
 .SH NAME
 file-enumerator \- recursively inventory files and supported archive members
 .SH SYNOPSIS
@@ -12,9 +12,12 @@ walks
 and its subdirectories, applies optional file-extension, filename, and folder
 filters, and writes the matching inventory as text, CSV, or both.
 .PP
-Supported ZIP and TAR-family archives are inspected by default without
-extracting their contents. Archive members are evaluated by the same filters as
-filesystem files and are clearly marked in generated reports.
+ZIP and TAR-family archives are inspected natively by default without
+extracting their contents. When
+.B bsdtar
+is installed, additional formats including RAR and ISO images are also listed.
+Archive members are evaluated by the same filters as filesystem files and are
+clearly marked in generated reports.
 .PP
 Exclusions always win. Multiple values within one filter category are treated
 as OR conditions. Different include categories are combined as AND conditions.
@@ -124,7 +127,7 @@ Display command help and exit.
 .SH ARCHIVE SUPPORT
 Archive traversal is enabled by default and does not extract files.
 .PP
-Supported ZIP formats and containers:
+The Python standard library reads ZIP containers:
 .BR .zip ,
 .BR .jar ,
 .BR .war ,
@@ -133,9 +136,8 @@ Supported ZIP formats and containers:
 .BR .apk ,
 .BR .xpi ,
 and
-.BR .epub .
-.PP
-Supported TAR formats:
+.BR .epub ;
+and TAR variants:
 .BR .tar ,
 .BR .tar.gz ,
 .BR .tgz ,
@@ -146,14 +148,37 @@ Supported TAR formats:
 and
 .BR .txz .
 .PP
-Known archive formats unsupported by the dependency-free backend, including
-.BR .7z ,
+When
+.B bsdtar
+is available, the program also reads
 .BR .rar ,
-.BR .cab ,
 .BR .iso ,
-and
+.BR .7z ,
+.BR .cab ,
+.BR .cpio ,
+.BR .lha ,
+.BR .lzh ,
+.BR .ar ,
+.BR .xar ,
+.BR .rpm ,
+.BR .deb ,
 .BR .tar.zst ,
-are reported as failures rather than silently skipped.
+and
+.BR .tzst .
+On Fedora, install the helper with:
+.PP
+.nf
+sudo dnf install bsdtar
+.fi
+.PP
+If the helper is absent, the scan continues and records an
+.B ARCHIVE BACKEND MISSING
+failure. Encrypted RAR headers, malformed archives, and formats rejected by
+libarchive are recorded as
+.B ARCHIVE ERROR
+failures.
+.B .ace
+remains explicitly unsupported.
 .PP
 Nested archive files are listed as archive members but are not recursively
 opened. Filtering an archive container out of normal output does not prevent
@@ -188,7 +213,10 @@ and
 .PP
 ZIP member timestamps are left blank because ZIP timestamps do not reliably
 carry timezone information. TAR member timestamps are written in UTC when
-available.
+available. Broad-format listings from
+.B bsdtar
+do not expose portable member size, timestamp, or symlink metadata; those fields
+are written as zero, blank, and false respectively.
 .SH FAILURE LOGGING
 Every filesystem, archive, argument, or fatal runtime failure is printed to
 standard error. The program also writes a timestamped file named:
@@ -268,6 +296,7 @@ The retained PowerShell implementation under
 has not yet been brought to archive feature parity with the Linux/Python
 command.
 .SH SEE ALSO
+.BR bsdtar (1),
 .BR find (1),
 .BR tar (1),
 .BR tree (1),

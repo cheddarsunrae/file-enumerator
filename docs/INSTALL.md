@@ -8,11 +8,12 @@ Requirements:
 - GNU Make and standard Unix installation tools
 - `man-db` for indexed manual-page lookup
 - `bash-completion` for Bash completion
+- `bsdtar` for RAR, ISO, 7-Zip, CAB, and other broad archive formats
 
 On Fedora:
 
 ```bash
-sudo dnf install python3 make man-db bash-completion
+sudo dnf install python3 make man-db bash-completion bsdtar
 ```
 
 Install system-wide under `/usr/local`:
@@ -65,7 +66,7 @@ PREFIX="$HOME/.local" ./scripts/uninstall.sh
 Install the RPM build tools:
 
 ```bash
-sudo dnf install rpm-build rpmdevtools python3 make bash-completion
+sudo dnf install rpm-build rpmdevtools python3 make bash-completion bsdtar
 ```
 
 Build and stage the source archive:
@@ -73,7 +74,7 @@ Build and stage the source archive:
 ```bash
 make dist
 rpmdev-setuptree
-cp dist/file-enumerator-1.1.1.tar.gz ~/rpmbuild/SOURCES/
+cp dist/file-enumerator-1.2.0.tar.gz ~/rpmbuild/SOURCES/
 cp packaging/rpm/file-enumerator.spec ~/rpmbuild/SPECS/
 rpmbuild -ba ~/rpmbuild/SPECS/file-enumerator.spec
 ```

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 — 2026-07-21
+
+- Added optional `bsdtar` archive listing for RAR, ISO, 7-Zip, CAB, CPIO,
+  LHA/LZH, AR/XAR, RPM/DEB, and Zstandard-compressed TAR files.
+- Added explicit missing-backend errors with the Fedora installation command.
+- Preserved native dependency-free ZIP and TAR handling.
+- Added regression coverage for RAR/ISO listing and missing helper logging.
+- Updated the man page, Fedora packaging, and installation documentation.
+
 ## 1.1.1 — 2026-07-21
 
 - Released the project publicly under the MIT License.
